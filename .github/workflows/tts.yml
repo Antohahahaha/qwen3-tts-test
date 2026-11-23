@@ -3,14 +3,31 @@ on: workflow_dispatch
 jobs:
   tts:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: sudo apt-get update -y && sudo apt-get install -y sox ffmpeg
-      - run: pip install -U qwen-tts soundfile numpy torch --extra-index-url https://download.pytorch.org/whl/cpu
-      - run: free -g; nproc; python gen.py
-      - run: ffmpeg -y -i out/test_full.wav -c:a libmp3lame -b:a 192k out/test_full.mp3
-      - uses: actions/upload-artifact@v4
-        with: { name: tts-out, path: out/ }
+        with:
+          python-version: "3.12"
+      - name: Install system packages
+        run: sudo apt-get update -y && sudo apt-get install -y sox ffmpeg
+      - name: Install Python packages (CPU torch)
+        run: pip install -U qwen-tts soundfile numpy torch --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Generate test voice
+        timeout-minutes: 14
+        shell: bash
+        run: |
+          free -g
+          nproc
+          mkdir -p out
+          python gen.py 2>&1 | tee out/log.txt
+      - name: Convert to MP3
+        if: ${{ hashFiles('out/test.wav') != '' }}
+        run: ffmpeg -y -i out/test.wav -c:a libmp3lame -b:a 192k out/test.mp3
+      - name: Save artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-out
+          path: out/
+          if-no-files-found: warn
