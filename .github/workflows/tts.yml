@@ -1,70 +1,121 @@
-name: qwen3-tts-clone
+name: voice-tests
 on:
   workflow_dispatch:
     inputs:
-      model_size:
-        description: "Модель Base"
+      run_chatterbox:
+        description: "Chatterbox Multilingual: 3 варианта A/B/C"
+        type: boolean
+        default: true
+      run_qwen:
+        description: "Qwen3-TTS Base clone (медленно на CPU)"
+        type: boolean
+        default: false
+      qwen_size:
+        description: "Размер Qwen3-TTS Base"
         type: choice
         options: ["1.7B", "0.6B"]
-        default: "1.7B"
+        default: "0.6B"
       x_vector_only:
-        description: "Только эмбеддинг голоса (false = ICL, использует ref_text; рекомендуется)"
+        description: "Qwen: только эмбеддинг (false = ICL с ref_text)"
         type: boolean
         default: false
 permissions:
   contents: read
 jobs:
-  tts:
+  chatterbox:
+    if: ${{ inputs.run_chatterbox }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
-      - name: Guard - no audio files in repo
+      - name: Guards
+        shell: bash
+        env:
+          REF_AUDIO_B64: ${{ secrets.REF_AUDIO_B64 }}
+          ARTIFACT_PASS: ${{ secrets.ARTIFACT_PASS }}
+          NEED_REF_TEXT: "false"
+        run: ./tools/guard.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
         run: |
-          if git ls-files | grep -Ei '\.(wav|mp3|m4a|ogg|opus|flac|aac|aiff|b64|enc)$'; then
-            echo "Audio file tracked in repo - aborting"; exit 1
+          sudo apt-get update -y && sudo apt-get install -y ffmpeg
+          pip install -U chatterbox-tts soundfile numpy --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Generate A/B/C
+        timeout-minutes: 35
+        shell: bash
+        env:
+          REF_AUDIO_B64: ${{ secrets.REF_AUDIO_B64 }}
+        run: |
+          free -g; nproc; mkdir -p out
+          python gen_chatterbox.py 2>&1 | tee out/log.txt
+      - name: Encrypt result
+        if: ${{ always() }}
+        shell: bash
+        env:
+          ARTIFACT_PASS: ${{ secrets.ARTIFACT_PASS }}
+        run: |
+          if ls out/*.wav >/dev/null 2>&1; then
+            tar -C out -cf out/chatterbox.tar $(cd out && ls *.wav)
+            openssl enc -aes-256-cbc -pbkdf2 -md sha256 -salt -in out/chatterbox.tar -out out/chatterbox.tar.enc -pass env:ARTIFACT_PASS
+            rm -f out/*.wav out/chatterbox.tar
           fi
-      - name: Guard - secrets present
+      - name: Save artifacts (encrypted only)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-chatterbox
+          path: out/chatterbox.tar.enc
+          retention-days: 2
+          if-no-files-found: warn
+  qwen:
+    if: ${{ inputs.run_qwen }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Guards
         shell: bash
         env:
           REF_AUDIO_B64: ${{ secrets.REF_AUDIO_B64 }}
           REF_TEXT: ${{ secrets.REF_TEXT }}
           ARTIFACT_PASS: ${{ secrets.ARTIFACT_PASS }}
-        run: |
-          [ -n "$REF_AUDIO_B64" ] || { echo "Secret REF_AUDIO_B64 is missing"; exit 1; }
-          [ -n "$ARTIFACT_PASS" ] || { echo "Secret ARTIFACT_PASS is missing (output must be encrypted)"; exit 1; }
-          if [ "${{ inputs.x_vector_only }}" != "true" ]; then [ -n "$REF_TEXT" ] || { echo "Secret REF_TEXT is missing"; exit 1; }; fi
+          NEED_REF_TEXT: ${{ inputs.x_vector_only == false }}
+        run: ./tools/guard.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install system packages
-        run: sudo apt-get update -y && sudo apt-get install -y sox ffmpeg
-      - name: Install Python packages (CPU torch)
-        run: pip install -U qwen-tts soundfile numpy torch --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Install
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y sox ffmpeg
+          pip install -U qwen-tts soundfile numpy torch --extra-index-url https://download.pytorch.org/whl/cpu
       - name: Generate (voice clone)
-        timeout-minutes: 14
+        timeout-minutes: 22
         shell: bash
         env:
           REF_AUDIO_B64: ${{ secrets.REF_AUDIO_B64 }}
           REF_TEXT: ${{ secrets.REF_TEXT }}
-          MODEL_SIZE: ${{ inputs.model_size }}
+          MODEL_SIZE: ${{ inputs.qwen_size }}
           X_VECTOR_ONLY: ${{ inputs.x_vector_only }}
         run: |
           free -g; nproc; mkdir -p out
           python gen.py 2>&1 | tee out/log.txt
       - name: Encrypt result
-        if: ${{ hashFiles('out/test.wav') != '' }}
+        if: ${{ always() }}
         shell: bash
         env:
           ARTIFACT_PASS: ${{ secrets.ARTIFACT_PASS }}
         run: |
-          openssl enc -aes-256-cbc -pbkdf2 -md sha256 -salt -in out/test.wav -out out/test.wav.enc -pass env:ARTIFACT_PASS
-          rm -f out/test.wav
-      - name: Save artifacts (encrypted)
+          if [ -f out/test.wav ]; then
+            openssl enc -aes-256-cbc -pbkdf2 -md sha256 -salt -in out/test.wav -out out/test.wav.enc -pass env:ARTIFACT_PASS
+            rm -f out/test.wav
+          fi
+      - name: Save artifacts (encrypted only)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: tts-out
+          name: tts-qwen
           path: out/test.wav.enc
           retention-days: 2
           if-no-files-found: warn

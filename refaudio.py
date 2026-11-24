@@ -1,5 +1,5 @@
 """Декодирование референса из секрета GitHub (base64) во временную папку ВНЕ репозитория. Файл наружу не пишется."""
-import base64, os, subprocess, sys, tempfile, wave
+import atexit, base64, os, shutil, subprocess, sys, tempfile, wave
 import numpy as np
 
 
@@ -19,6 +19,16 @@ def load_ref(b64: str, min_s: float = 2.0, max_s: float = 15.0):
     if float(np.sqrt((x ** 2).mean())) < 0.005:
         raise ValueError("reference is almost silent")
     return x, sr
+
+
+def ref_to_path(b64: str, max_s: float = 12.0) -> str:
+    """Для моделей, которым нужен путь к файлу: wav во временной папке вне репозитория, удаляется при выходе."""
+    x, sr = load_ref(b64, max_s=max_s)
+    d = tempfile.mkdtemp(prefix="ref_"); atexit.register(shutil.rmtree, d, ignore_errors=True)
+    p = os.path.join(d, "ref.wav")
+    with wave.open(p, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes((x * 32767).astype("<i2").tobytes())
+    return p
 
 
 if __name__ == "__main__":      # самопроверка без torch: python refaudio.py файл_base64.txt

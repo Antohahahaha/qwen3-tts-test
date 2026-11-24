@@ -7,9 +7,7 @@ import torch
 from qwen_tts import Qwen3TTSModel
 from refaudio import load_ref
 
-TEXT = ("Горный посёлок. Всего за пять рублей! Все здания пустуют. "
-        "Рабочие прокладывают трубы, метр за метром. Но из одной трубы идёт дым! "
-        "Что строим? Один: мини-гэс. Два: ветряки.")
+from fragment import FULL_TEXT as TEXT
 
 size = os.environ.get("MODEL_SIZE", "1.7B")
 xvec = os.environ.get("X_VECTOR_ONLY", "false").lower() == "true"
