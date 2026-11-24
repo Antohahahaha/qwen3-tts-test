@@ -1,11 +1,39 @@
-name: qwen3-tts-test
-on: workflow_dispatch
+name: qwen3-tts-clone
+on:
+  workflow_dispatch:
+    inputs:
+      model_size:
+        description: "Модель Base"
+        type: choice
+        options: ["1.7B", "0.6B"]
+        default: "1.7B"
+      x_vector_only:
+        description: "Только эмбеддинг голоса (false = ICL, использует ref_text; рекомендуется)"
+        type: boolean
+        default: false
+permissions:
+  contents: read
 jobs:
   tts:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Guard - no audio files in repo
+        run: |
+          if git ls-files | grep -Ei '\.(wav|mp3|m4a|ogg|opus|flac|aac|aiff|b64|enc)$'; then
+            echo "Audio file tracked in repo - aborting"; exit 1
+          fi
+      - name: Guard - secrets present
+        shell: bash
+        env:
+          REF_AUDIO_B64: ${{ secrets.REF_AUDIO_B64 }}
+          REF_TEXT: ${{ secrets.REF_TEXT }}
+          ARTIFACT_PASS: ${{ secrets.ARTIFACT_PASS }}
+        run: |
+          [ -n "$REF_AUDIO_B64" ] || { echo "Secret REF_AUDIO_B64 is missing"; exit 1; }
+          [ -n "$ARTIFACT_PASS" ] || { echo "Secret ARTIFACT_PASS is missing (output must be encrypted)"; exit 1; }
+          if [ "${{ inputs.x_vector_only }}" != "true" ]; then [ -n "$REF_TEXT" ] || { echo "Secret REF_TEXT is missing"; exit 1; }; fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -13,21 +41,30 @@ jobs:
         run: sudo apt-get update -y && sudo apt-get install -y sox ffmpeg
       - name: Install Python packages (CPU torch)
         run: pip install -U qwen-tts soundfile numpy torch --extra-index-url https://download.pytorch.org/whl/cpu
-      - name: Generate test voice
+      - name: Generate (voice clone)
         timeout-minutes: 14
         shell: bash
+        env:
+          REF_AUDIO_B64: ${{ secrets.REF_AUDIO_B64 }}
+          REF_TEXT: ${{ secrets.REF_TEXT }}
+          MODEL_SIZE: ${{ inputs.model_size }}
+          X_VECTOR_ONLY: ${{ inputs.x_vector_only }}
         run: |
-          free -g
-          nproc
-          mkdir -p out
+          free -g; nproc; mkdir -p out
           python gen.py 2>&1 | tee out/log.txt
-      - name: Convert to MP3
+      - name: Encrypt result
         if: ${{ hashFiles('out/test.wav') != '' }}
-        run: ffmpeg -y -i out/test.wav -c:a libmp3lame -b:a 192k out/test.mp3
-      - name: Save artifacts
+        shell: bash
+        env:
+          ARTIFACT_PASS: ${{ secrets.ARTIFACT_PASS }}
+        run: |
+          openssl enc -aes-256-cbc -pbkdf2 -md sha256 -salt -in out/test.wav -out out/test.wav.enc -pass env:ARTIFACT_PASS
+          rm -f out/test.wav
+      - name: Save artifacts (encrypted)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: tts-out
           path: out/
+          retention-days: 2
           if-no-files-found: warn
