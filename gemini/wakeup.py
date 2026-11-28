@@ -1,8 +1,9 @@
-"""Gemini TTS: шёпот -> обычный голос -> крик. Ключ: GEMINI_API_KEY (или подставляется прокси)."""
+"""Gemini TTS: шёпот -> обычный голос -> крик.
+Ключ: переменная GEMINI_API_KEY (передаётся в заголовке x-goog-api-key)."""
 import base64, json, os, sys, urllib.error, urllib.request, wave
 
-MODEL = os.environ.get("GEMINI_TTS_MODEL", "gemini-3.8-flash-tts")
-VOICE = os.environ.get("GEMINI_VOICE", "puck").lower()
+MODEL = os.environ.get("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+VOICE = os.environ.get("GEMINI_VOICE", "Puck")
 OUT = sys.argv[1] if len(sys.argv) > 1 else "wakeup.wav"
 
 PROMPT = """Озвучь сценку на русском языке одним голосом, строго следуя пометкам в квадратных скобках (их не произносить).
@@ -17,35 +18,29 @@ PROMPT = """Озвучь сценку на русском языке одним 
 """
 
 body = {
-    "model": MODEL,
-    "modalities": ["audio"],
-    "audio": {"voice": VOICE, "format": os.environ.get("GEMINI_FMT", "wav")},
-    "messages": [{"role": "user", "content": PROMPT}],
+    "contents": [{"parts": [{"text": PROMPT}]}],
+    "generationConfig": {
+        "responseModalities": ["AUDIO"],
+        "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": VOICE}}},
+    },
 }
-# OpenAI-совместимый эндпоинт Gemini: ключ в Authorization: Bearer
 key = os.environ.get("GEMINI_API_KEY")
+if not key:
+    sys.exit("Нужна переменная GEMINI_API_KEY")
 req = urllib.request.Request(
-    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
     data=json.dumps(body).encode(),
-    headers={"Content-Type": "application/json",
-             **({"Authorization": f"Bearer {key}"} if key else {})},
+    headers={"Content-Type": "application/json", "x-goog-api-key": key},
 )
 try:
     with urllib.request.urlopen(req, timeout=300) as r:
         resp = json.load(r)
 except urllib.error.HTTPError as e:
-    sys.exit(f"HTTP {e.code}: {e.read().decode()[:500]}")
-if isinstance(resp, list):
-    resp = resp[0]
-msg = resp["choices"][0]["message"]
-if "audio" not in msg:
-    sys.exit(f"Нет аудио в ответе: {json.dumps(msg, ensure_ascii=False)[:400]}")
-data = base64.b64decode(msg["audio"]["data"])
-if data[:4] == b"RIFF":
-    open(OUT, "wb").write(data)
-else:  # сырой PCM 24 кГц 16 бит моно
-    with wave.open(OUT, "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(data)
-with wave.open(OUT) as w:
-    dur = w.getnframes() / w.getframerate()
-print(f"OK {OUT} {dur:.1f}s")
+    sys.exit(f"HTTP {e.code}: {e.read().decode()[:600]}")
+part = resp["candidates"][0]["content"]["parts"][0]
+if "inlineData" not in part:
+    sys.exit(f"Нет аудио в ответе: {json.dumps(part, ensure_ascii=False)[:400]}")
+pcm = base64.b64decode(part["inlineData"]["data"])
+with wave.open(OUT, "wb") as w:  # PCM 24 кГц, 16 бит, моно
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(pcm)
+print(f"OK {OUT} {len(pcm)/48000:.1f}s")
